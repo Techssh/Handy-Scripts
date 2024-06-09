@@ -58,11 +58,16 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 
 
 
-# Define file paths
+# Define file paths and registry paths
 $files = @{
     "qmgr.dll" = "$env:WINDIR\System32\qmgr.dll"
     "wuaueng.dll" = "$env:WINDIR\System32\wuaueng.dll"
     "wuauclt.exe" = "$env:WINDIR\System32\wuauclt.exe"
+}
+
+$registryPaths = @{
+    "wuauserv" = "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv"
+    "WaaSMedicSvc" = "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc"
 }
 
 # Function to change file owner to Administrators and grant full control
@@ -149,13 +154,77 @@ function Enable-Files {
     Write-Host "Windows Update service reverted to manual startup."
 }
 
+# Function to copy registry keys
+function Copy-RegistryKey {
+    param (
+        [string]$sourceKey,
+        [string]$destinationKey
+    )
+    if (Test-Path $sourceKey) {
+        New-Item -Path $destinationKey -Force
+        Copy-Item -Path "$sourceKey\*" -Destination $destinationKey -Recurse -Force
+        Remove-Item -Path $sourceKey -Recurse
+        Write-Host "Copied and removed original key $sourceKey to $destinationKey"
+    } else {
+        Write-Host "Registry key $sourceKey not found"
+    }
+}
+
+# Function to check if registry keys have already been renamed
+function Check-RegistryAlreadyDisabled {
+    foreach ($key in $registryPaths.GetEnumerator()) {
+        if (Test-Path "$($key.Value)-BLOCKED") {
+            return $true
+        }
+    }
+    return $false
+}
+
+# Function to disable services via registry
+function Disable-Registry {
+    if (Check-RegistryAlreadyDisabled) {
+        Write-Host "Registry keys have already been renamed. Aborting."
+        return
+    }
+
+    Stop-WindowsUpdateService
+    Disable-WindowsUpdateService
+
+    Copy-RegistryKey -sourceKey $registryPaths["wuauserv"] -destinationKey "$($registryPaths["wuauserv"])-BLOCKED"
+    Copy-RegistryKey -sourceKey $registryPaths["WaaSMedicSvc"] -destinationKey "$($registryPaths["WaaSMedicSvc"])-BLOCKED"
+}
+
+# Function to enable services via registry
+function Enable-Registry {
+    Copy-RegistryKey -sourceKey "$($registryPaths["wuauserv"])-BLOCKED" -destinationKey $registryPaths["wuauserv"]
+    Copy-RegistryKey -sourceKey "$($registryPaths["WaaSMedicSvc"])-BLOCKED" -destinationKey $registryPaths["WaaSMedicSvc"]
+
+    Write-Host "Reverting changes..."
+    Set-Service -Name "wuauserv" -StartupType Manual
+    #Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue
+    Write-Host "Windows Update service reverted to manual startup."
+}
+
 # Main script execution
 $choice = Read-Host "Enter 'disable' to disable Windows update service or 'enable' to revert changes"
+$method = Read-Host "Enter '1' for file renaming method or '2' for registry method"
 
 if ($choice -eq "disable") {
-    Disable-Files
+    if ($method -eq "1") {
+        Disable-Files
+    } elseif ($method -eq "2") {
+        Disable-Registry
+    } else {
+        Write-Host "Invalid method choice. Please enter '1' or '2'."
+    }
 } elseif ($choice -eq "enable") {
-    Enable-Files
+    if ($method -eq "1") {
+        Enable-Files
+    } elseif ($method -eq "2") {
+        Enable-Registry
+    } else {
+        Write-Host "Invalid method choice. Please enter '1' or '2'."
+    }
 } else {
     Write-Host "Invalid choice. Please enter 'disable' or 'enable'."
 }
