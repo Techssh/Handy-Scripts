@@ -55,7 +55,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit
 }
  
-
+###==================================================================================================###
 
 
 # Define file paths and registry paths
@@ -66,9 +66,12 @@ $files = @{
 }
 
 $registryPaths = @{
-    "wuauserv" = "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv"
-    "WaaSMedicSvc" = "HKLM:\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc"
+    "wuauserv" = "HKLM\SYSTEM\CurrentControlSet\Services\wuauserv"
+    "WaaSMedicSvc" = "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc"
 }
+
+# Backup directory
+$backupDir = "C:\RegeditBackupDIR"
 
 # Function to change file owner to Administrators and grant full control
 function Set-FilePermissions {
@@ -160,10 +163,10 @@ function Copy-RegistryKey {
         [string]$sourceKey,
         [string]$destinationKey
     )
-    if (Test-Path $sourceKey) {
-        New-Item -Path $destinationKey -Force
-        Copy-Item -Path "$sourceKey\*" -Destination $destinationKey -Recurse -Force
-        Remove-Item -Path $sourceKey -Recurse
+    if (Test-Path "Registry::$sourceKey") {
+        New-Item -Path "Registry::$destinationKey" -Force
+        Copy-Item -Path "Registry::$sourceKey\*" -Destination "Registry::$destinationKey" -Recurse -Force
+        Remove-Item -Path "Registry::$sourceKey" -Recurse
         Write-Host "Copied and removed original key $sourceKey to $destinationKey"
     } else {
         Write-Host "Registry key $sourceKey not found"
@@ -173,11 +176,25 @@ function Copy-RegistryKey {
 # Function to check if registry keys have already been renamed
 function Check-RegistryAlreadyDisabled {
     foreach ($key in $registryPaths.GetEnumerator()) {
-        if (Test-Path "$($key.Value)-BLOCKED") {
+        if (Test-Path "Registry::$($key.Value)-BLOCKED") {
             return $true
         }
     }
     return $false
+}
+
+# Function to backup registry keys
+function Backup-RegistryKey {
+    param (
+        [string]$keyPath,
+        [string]$backupPath
+    )
+    $backupFilePath = Join-Path -Path $backupDir -ChildPath ($backupPath + ".reg")
+    if (-Not (Test-Path -Path $backupDir)) {
+        New-Item -Path $backupDir -ItemType Directory -Force
+    }
+    & reg export $keyPath $backupFilePath /y
+    Write-Host "Backed up $keyPath to $backupFilePath"
 }
 
 # Function to disable services via registry
@@ -190,6 +207,10 @@ function Disable-Registry {
     Stop-WindowsUpdateService
     Disable-WindowsUpdateService
 
+    foreach ($key in $registryPaths.GetEnumerator()) {
+        Backup-RegistryKey -keyPath $key.Value -backupPath $key.Key
+    }
+
     Copy-RegistryKey -sourceKey $registryPaths["wuauserv"] -destinationKey "$($registryPaths["wuauserv"])-BLOCKED"
     Copy-RegistryKey -sourceKey $registryPaths["WaaSMedicSvc"] -destinationKey "$($registryPaths["WaaSMedicSvc"])-BLOCKED"
 }
@@ -201,7 +222,7 @@ function Enable-Registry {
 
     Write-Host "Reverting changes..."
     Set-Service -Name "wuauserv" -StartupType Manual
-    #Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue
+    Start-Service -Name "wuauserv" -ErrorAction SilentlyContinue
     Write-Host "Windows Update service reverted to manual startup."
 }
 
